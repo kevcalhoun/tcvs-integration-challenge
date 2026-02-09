@@ -261,6 +261,29 @@ class TecovaSuiteClient:
                 headers=self._get_headers(),
             )
             return self._handle_response(response)
+        
+    def create_sales_order(self, order_data: dict[str, Any]) -> dict[str, Any]:
+        """Create a new sales order in TecovaSuite.
+        
+        Args:
+            order_data: The sales order data to create
+            
+        Returns:
+            The created sales order record with internal_id
+            
+        Raises:
+            TecovaSuiteError: If the API returns an error
+        """
+        logger.info("Creating sales order in TecovaSuite")
+        
+        with httpx.Client() as client:
+            response = client.post(
+                f"{self.base_url}/record/salesorder",
+                headers=self._get_headers(),
+                json=order_data,
+            )
+            return self._handle_response(response)
+
 
     def fulfill_sales_order(
         self,
