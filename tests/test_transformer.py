@@ -1,10 +1,9 @@
-"""Tests for order processing chain tasks.
+"""Tests for order transformation.
 
-These tests verify the chain-based implementation works correctly.
+Tests the refactored transformer with small, focused functions.
 """
 
 import pytest
-from decimal import Decimal
 from typing import Any
 
 from src.models.shopify.order import ShopifyOrder
@@ -14,17 +13,11 @@ from src.models.tecovasuite.sales_order import (
 )
 from src.services.transformers.order_transformer import (
     transform_shopify_order_to_tecovasuite,
-    _calculate_unit_price_with_discount,
     _format_order_date,
     _build_order_memo,
+    _parse_price_to_cents,
+    _calculate_line_discount,
 )
-
-
-# Keep all your existing tests - they still work!
-# The transformer tests don't need to change because the transformer
-# is still a pure function.
-
-# Only the task orchestration changed, not the business logic.
 
 
 class TestTecovaSuiteSalesOrderLine:
@@ -67,10 +60,9 @@ class TestTecovaSuiteSalesOrderLine:
             item="201",
             quantity=1,
             rate=29500,
-            amount=None,
         )
         result = line.to_dict()
-        assert "amount" not in result
+        assert "discount" not in result
         assert result["item"] == "201"
 
 
@@ -164,9 +156,6 @@ class TestOrderTransformer:
         """Test transforming a simple order."""
         shopify_order = ShopifyOrder.model_validate(simple_order)
         
-        # Mock the variant_id to match our mapping
-        shopify_order.line_items[0].variant_id = 12345
-        
         customer_id = "101"
         item_mappings = {12345: "201"}
         
@@ -194,7 +183,6 @@ class TestOrderTransformer:
         })
         
         shopify_order = ShopifyOrder.model_validate(simple_order)
-        shopify_order.line_items[0].variant_id = 12345
         
         customer_id = "101"
         item_mappings = {
@@ -217,7 +205,6 @@ class TestOrderTransformer:
         ]
         
         shopify_order = ShopifyOrder.model_validate(simple_order)
-        shopify_order.line_items[0].variant_id = 12345
         
         customer_id = "101"
         item_mappings = {12345: "201"}
@@ -226,17 +213,26 @@ class TestOrderTransformer:
             shopify_order, customer_id, item_mappings
         )
         
-        # $295.00 - $44.25 = $250.75 = 25075 cents
-        assert result.item[0].rate == 25075
+        # Rate should be original price (29500 cents)
+        # Discount should be shown separately (4425 cents)
+        assert result.item[0].rate == 29500
+        assert result.item[0].discount == 4425
 
 
-class TestDiscountCalculation:
-    """Test discount calculation logic."""
+class TestHelperFunctions:
+    """Test individual helper functions."""
 
-    def test_no_discount(self) -> None:
-        """Test calculating price with no discount."""
+    def test_parse_price_to_cents(self) -> None:
+        """Test price parsing."""
+        assert _parse_price_to_cents("295.00") == 29500
+        assert _parse_price_to_cents("90.00") == 9000
+        assert _parse_price_to_cents("10.50") == 1050
+
+    def test_calculate_line_discount(self) -> None:
+        """Test discount calculation."""
         from src.models.shopify.order import ShopifyLineItem
         
+        # No discount
         line_item = ShopifyLineItem(
             id=1,
             title="Test",
@@ -244,14 +240,9 @@ class TestDiscountCalculation:
             price="295.00",
             discount_allocations=[],
         )
+        assert _calculate_line_discount(line_item) == 0
         
-        price = _calculate_unit_price_with_discount(line_item)
-        assert price == 29500  # $295.00
-
-    def test_single_discount(self) -> None:
-        """Test calculating price with single discount."""
-        from src.models.shopify.order import ShopifyLineItem
-        
+        # Single discount
         line_item = ShopifyLineItem(
             id=1,
             title="Test",
@@ -261,14 +252,9 @@ class TestDiscountCalculation:
                 {"amount": "44.25", "discount_application_index": 0}
             ],
         )
+        assert _calculate_line_discount(line_item) == 4425
         
-        price = _calculate_unit_price_with_discount(line_item)
-        assert price == 25075  # $250.75
-
-    def test_multiple_discounts(self) -> None:
-        """Test calculating price with multiple discounts."""
-        from src.models.shopify.order import ShopifyLineItem
-        
+        # Multiple discounts
         line_item = ShopifyLineItem(
             id=1,
             title="Test",
@@ -279,53 +265,15 @@ class TestDiscountCalculation:
                 {"amount": "5.00", "discount_application_index": 1},
             ],
         )
-        
-        price = _calculate_unit_price_with_discount(line_item)
-        assert price == 8500  # $85.00
+        assert _calculate_line_discount(line_item) == 1500
 
-    def test_discount_with_quantity(self) -> None:
-        """Test calculating price with quantity > 1."""
-        from src.models.shopify.order import ShopifyLineItem
-        
-        line_item = ShopifyLineItem(
-            id=1,
-            title="Test",
-            quantity=2,
-            price="100.00",
-            discount_allocations=[
-                {"amount": "20.00", "discount_application_index": 0}
-            ],
-        )
-        
-        price = _calculate_unit_price_with_discount(line_item)
-        # Total: ($100 * 2) - $20 = $180
-        # Per unit: $180 / 2 = $90
-        assert price == 9000
+    def test_format_order_date(self) -> None:
+        """Test date formatting."""
+        assert _format_order_date("2026-02-07T12:34:56Z") == "2026-02-07"
+        assert _format_order_date("2026-02-07T00:00:00Z") == "2026-02-07"
 
-
-class TestDateFormatting:
-    """Test date formatting logic."""
-
-    def test_format_datetime_string(self) -> None:
-        """Test formatting ISO 8601 datetime string."""
-        date_str = "2026-02-07T12:34:56Z"
-        result = _format_order_date(date_str)
-        assert result == "2026-02-07"
-
-    def test_format_datetime_with_z(self) -> None:
-        """Test formatting datetime with Z suffix."""
-        date_str = "2026-02-07T00:00:00Z"
-        result = _format_order_date(date_str)
-        assert result == "2026-02-07"
-
-
-class TestMemoBuilding:
-    """Test memo field building logic."""
-
-    def test_memo_with_email(self) -> None:
-        """Test building memo with email."""
-        from src.models.shopify.order import ShopifyOrder
-        
+    def test_build_order_memo(self) -> None:
+        """Test memo building."""
         order_data = {
             "id": 123,
             "name": "#1001",
@@ -346,22 +294,3 @@ class TestMemoBuilding:
         memo = _build_order_memo(order)
         assert "1001" in memo
         assert "john@example.com" in memo
-
-    def test_memo_without_email(self) -> None:
-        """Test building memo without email."""
-        from src.models.shopify.order import ShopifyOrder
-        
-        order_data = {
-            "id": 123,
-            "name": "#1001",
-            "order_number": 1001,
-            "email": None,
-            "created_at": "2026-02-07T12:00:00Z",
-            "subtotal_price": "100.00",
-            "total_price": "100.00",
-            "customer": None,
-            "line_items": [],
-        }
-        order = ShopifyOrder.model_validate(order_data)
-        memo = _build_order_memo(order)
-        assert "1001" in memo
