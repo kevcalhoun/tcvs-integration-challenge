@@ -159,12 +159,14 @@ def _transform_single_line_item(
     
     base_price_cents = _parse_price_to_cents(line_item.price)
     discount_cents = _calculate_line_discount(line_item)
+    tax_cents = _calculate_line_tax(line_item)
     
     return TecovaSuiteSalesOrderLine(
         item=item_id,
         quantity=line_item.quantity,
         rate=base_price_cents,
         discount=discount_cents if discount_cents > 0 else None,
+        tax=tax_cents if tax_cents > 0 else None,
         description=_build_item_description(line_item),
     )
 
@@ -236,6 +238,28 @@ def _calculate_line_discount(line_item) -> int:
         total_discount_cents += int(discount_amount * 100)
 
     return total_discount_cents
+
+
+def _calculate_line_tax(line_item) -> int:
+    """Calculate total tax for a line item.
+    
+    Shopify provides per-line tax via tax_lines array.
+    
+    Args:
+        line_item: Shopify line item with tax_lines
+        
+    Returns:
+        Total tax in cents
+    """
+    total_tax_cents = 0
+    
+    if hasattr(line_item, 'tax_lines') and line_item.tax_lines:
+        for tax_line in line_item.tax_lines:
+            if 'price' in tax_line:
+                tax_amount = Decimal(tax_line['price'])
+                total_tax_cents += int(tax_amount * 100)
+    
+    return total_tax_cents
 
 
 def _build_item_description(line_item) -> str:

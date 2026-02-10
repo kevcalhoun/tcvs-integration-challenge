@@ -17,6 +17,7 @@ from src.services.transformers.order_transformer import (
     _build_order_memo,
     _parse_price_to_cents,
     _calculate_line_discount,
+    _calculate_line_tax,
 )
 
 
@@ -63,6 +64,7 @@ class TestTecovaSuiteSalesOrderLine:
         )
         result = line.to_dict()
         assert "discount" not in result
+        assert "tax" not in result
         assert result["item"] == "201"
 
 
@@ -218,6 +220,48 @@ class TestOrderTransformer:
         assert result.item[0].rate == 29500
         assert result.item[0].discount == 4425
 
+    def test_transform_order_with_tax(self, simple_order: dict[str, Any]) -> None:
+        """Test transforming an order with tax."""
+        simple_order["line_items"][0]["tax_lines"] = [
+            {"price": "23.60", "rate": 0.08, "title": "State Tax"}
+        ]
+        
+        shopify_order = ShopifyOrder.model_validate(simple_order)
+        
+        customer_id = "101"
+        item_mappings = {12345: "201"}
+        
+        result = transform_shopify_order_to_tecovasuite(
+            shopify_order, customer_id, item_mappings
+        )
+        
+        # Rate: $295.00, Tax: $23.60 (shown separately)
+        assert result.item[0].rate == 29500
+        assert result.item[0].tax == 2360
+
+    def test_transform_order_with_discount_and_tax(self, simple_order: dict[str, Any]) -> None:
+        """Test transforming an order with both discount and tax."""
+        simple_order["line_items"][0]["discount_allocations"] = [
+            {"amount": "44.25", "discount_application_index": 0}
+        ]
+        simple_order["line_items"][0]["tax_lines"] = [
+            {"price": "20.06", "rate": 0.08, "title": "State Tax"}
+        ]
+        
+        shopify_order = ShopifyOrder.model_validate(simple_order)
+        
+        customer_id = "101"
+        item_mappings = {12345: "201"}
+        
+        result = transform_shopify_order_to_tecovasuite(
+            shopify_order, customer_id, item_mappings
+        )
+        
+        # Rate: $295.00, Discount: $4s4.25, Tax: $20.06
+        assert result.item[0].rate == 29500
+        assert result.item[0].discount == 4425
+        assert result.item[0].tax == 2006
+
 
 class TestHelperFunctions:
     """Test individual helper functions."""
@@ -266,6 +310,42 @@ class TestHelperFunctions:
             ],
         )
         assert _calculate_line_discount(line_item) == 1500
+
+    def test_calculate_line_tax(self) -> None:
+        """Test tax calculation."""
+        from src.models.shopify.order import ShopifyLineItem
+        
+        # No tax
+        line_item = ShopifyLineItem(
+            id=1,
+            title="Test",
+            quantity=1,
+            price="295.00",
+        )
+        assert _calculate_line_tax(line_item) == 0
+        
+        # With single tax
+        line_item = ShopifyLineItem(
+            id=1,
+            title="Test",
+            quantity=1,
+            price="295.00",
+            tax_lines=[{"price": "23.60", "rate": 0.08, "title": "State Tax"}],
+        )
+        assert _calculate_line_tax(line_item) == 2360
+        
+        # With multiple tax lines
+        line_item = ShopifyLineItem(
+            id=1,
+            title="Test",
+            quantity=1,
+            price="100.00",
+            tax_lines=[
+                {"price": "5.00", "rate": 0.05, "title": "State Tax"},
+                {"price": "2.00", "rate": 0.02, "title": "Local Tax"},
+            ],
+        )
+        assert _calculate_line_tax(line_item) == 700  # $5 + $2 = $7
 
     def test_format_order_date(self) -> None:
         """Test date formatting."""
